@@ -153,12 +153,13 @@ be positioned in the file \monoespaco{interface.h}.
 We show below the structure of the file \monoespaco{wave.h}:
 
 @(src/wave.h@>=
-#ifndef __WEAVER_INTERFACE
-#define __WEAVER_INTERFACE
+#ifndef __WEAVER_INTERFACE_WAVE
+#define __WEAVER_INTERFACE_WAVE
 #ifdef __cplusplus
 extern "C" {
 #endif
 #include <stdbool.h> // Define  'bool' type
+#include <stdlib.h>
 @<Function Declaration (wave.h)@>
 #ifdef __cplusplus
 }
@@ -188,16 +189,324 @@ relates to this header, its structure is as follows:
 
 @(src/wave.c@>=
 #include "wave.h"
+#include <AL/al.h>
+#include <AL/alc.h>
+#include <stdlib.h>
+#include <stdio.h>
 @<Local Headers (wave.c)@>
 @<Local Variables (wave.c)@>
-//@<Auxiliary Local Functions (wave.c)@>
-//@<API Functions Definition (wave.c)@>
+@<Local Functions Declaration (wave.c)@>
+@<Auxiliary Local Functions (wave.c)@>
+@<API Functions Definition (wave.c)@>
 @
 
 All the code presented in this document will be placed in one of these
 two files. No other files will be created.
 
+\secao{2. The RIFF-WAVE Format}
 
+We will create an auxiliary function named
+\monoespaco{interpret\_wave}, which will perform most of the work
+required to interpret the WAVE format and initialize an OpenAL buffer
+from it. This function will be invoked within the extraction function
+as follows:
+
+@<API Functions Definition (wave.c)@>=
+void _extract_wave(void *(*perm_alloc)(size_t),
+                   void (*perm_free)(void *),
+                   void *(*temp_alloc)(size_t),
+                   void (*temp_free)(void *),
+                   void (*before_loading_interface)(void),
+                   void (*after_loading_interface)(void),
+                   char *source_filename, void *interface){
+  struct sound *snd;
+  if(before_loading_interface != NULL)
+    before_loading_interface();
+  snd = (struct sound *) interface;
+  permanent_alloc = perm_alloc;
+  permanent_free = perm_free;
+  temporary_alloc = temp_alloc;
+  temporary_free = temp_free;
+  if(interpret_wave(source_filename, snd -> buffer))
+    snd -> _loaded_sound = true;
+  if(after_loading_interface != NULL)
+    after_loading_interface();
+}
+@
+
+To understand what the interpret_wave function should do, we need to
+briefly explain how the WAVE---or more precisely, RIFF-WAVE---format
+works. Every WAVE file is also a RIFF file. A RIFF file is composed of
+one or more ``chunks''. Fortunately, in the specific case of the WAVE
+format, things are simpler: the entire file is made up of a single
+chunk.
+
+Each chunk consists of three parts: 4 bytes containing ASCII
+characters that identify the chunk type, 4 bytes indicating the size
+of the chunk data, and then a sequence of bytes of the specified size
+representing the actual data. The data section may also include
+padding bytes if the actual content is slightly shorter than the
+declared size. All numeric values must be read using little-endian
+byte order.
+
+In WAVE files, the first and only chunk in the file must begin with
+the ASCII identifier ``RIFF''.
+
+With this information, we can now proceed to read the first 8 bytes of
+the file:
+
+@<Auxiliary Local Functions (wave.c)@>=
+bool interpret_wave(char *filename, ALuint buffer){
+  FILE *fp;
+  fp = fopen(filename, "r");
+  if(fp == NULL){
+    perror(filename);
+    return false;
+  }
+  {
+    char buf[4];
+    size_t ret;
+    // Reading 'RIFF':
+    ret = fread(buf, 1, 4, fp);
+    if(ret != 4){
+      perror(filename);
+      return false;
+    }
+    if(buf[0] != 'R' || buf[1] != 'I' || buf[2] != 'F' || buf[3] != 'F'){
+      fprintf(stderr, "ERROR: %s not a RIFF file.\n", filename);
+      return false;
+    }
+    // Reading data size in main chunk:
+    ret = fread(buf, 1, 4, fp);
+    if(ret != 4){
+      perror(filename);
+      return false;
+    }
+    @<Interpret WAVE File@>
+  }
+  fclose(fp);
+  return true;
+}
+@
+
+There are two special chunk types in the RIFF format: RIFF and
+LIST. We can safely ignore the latter. However, the former is crucial,
+since---as we've seen---every WAVE file consists of a large chunk of
+type RIFF.
+
+What makes these chunk types special is that their data region
+contains multiple subchunks, each following the same pattern: a 4-byte
+ASCII identifier for the subchunk type, a 4-byte size field, and a
+data section.
+
+However, before the list of subchunks begins, the data region starts
+with 4 ASCII bytes that serve as a label. In the case of WAVE files,
+this label is always "WAVE". Let's interpret this part of the file:
+
+@<Interpret WAVE File@>=
+// Reading 'WAVE':
+ret = fread(buf, 1, 4, fp);
+if(ret != 4){
+  perror(filename);
+  return false;
+}
+if(buf[0] != 'W' || buf[1] != 'A' || buf[2] != 'V' || buf[3] != 'E'){
+  fprintf(stderr, "ERROR: %s not a WAVE file.\n", filename);
+  return false;
+}
+@
+
+After this part, we read the sub-chunks:
+
+@<Interpret WAVE File@>+=
+struct audio_data audio;
+while(read_chunk(fp, filename, &audio));
+@
+
+The \monoespaco{read\_chunk} function will be responsible for reading
+a single chunk and, based on its contents, updating the
+\monoespaco{audio\_data} structure, which will hold all the necessary
+information to generate our audio. As long as it successfully reads a
+complete chunk, it should return true. If it encounters an error or
+reaches the end of the file, it must return false.
+
+The attributes of the \monoespaco{audio\_data} structure will be
+defined later. For now, we declare it as follows:
+
+@<Local Variables (wave.c)@>+=
+struct audio_data{
+  @<struct audio_data: Struct Variables@>
+};
+@
+
+We now move on to the function that reads the subchunks. The WAVE
+specification defines six different subchunk types. However, in
+practice, only two mandatory types are commonly used: the ``fmt''
+subchunk, which contains information about the audio format, and the
+``data'' subchunk, which holds the actual audio data.
+
+The specification states that any unrecognized subchunk should be
+safely ignored.
+
+Our function for interpreting subchunks is defined as follows:
+
+@<Local Functions Declaration (wave.c)@>=
+bool read_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Auxiliary Local Functions (wave.c)@>+=
+bool read_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  size_t ret;
+  // Lendo o tipo do 'chunk' nos 4 primeiros caracteres
+  char type[4];
+  ret = fread(type, 1, 4, fp);
+  if(ret != 4){
+    if(feof(fp))
+      return false; // End of file, not an error
+    else{
+      perror(filename); // Error
+      return false;
+    }
+  }
+  if(type[0] == 'f' && type[1] == 'm' && type[2] == 't' && type[3] == ' ')
+    return read_fmt_chunk(fp, filename, audio);
+  else if(type[0] == 'd' && type[1] == 'a' && type[2] == 't' && type[3] == 'a')
+    return read_data_chunk(fp, filename, audio);
+  else
+    return read_unknown_chunk(fp, filename, audio);
+}
+@
+
+Note that there are three different types of functions, each
+responsible for interpreting a specific type of subchunk. We will
+start with the simplest one---the function that handles an unknown
+subchunk type. In this case, we will simply skip its contents.
+
+To do that, we just need to read the next 4 bytes, which indicate the
+size of the subchunk’s data, and then ignore all subsequent bytes up
+to the end of the subchunk:
+
+@<Local Functions Declaration (wave.c)@>+=
+bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Auxiliary Local Functions (wave.c)@>+=
+bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  unsigned long size;
+  char buffer[4];
+  size_t ret;
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  size = buffer[0] + (256 * buffer[1]) + (256 * 256 * buffer[2]) +
+         (256 * 256 * 256 * buffer[3]);
+  if(fseek(fp, size, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  return true;  
+}
+@
+
+The next subchunk we need to read is the format subchunk, identified
+by the string ``fmt '' (with a trailing space to make up 4
+bytes). According to the WAVE specification, this subchunk is
+mandatory and must always appear before the subchunk containing the
+actual audio data.
+
+The WAVE format is not a single, fixed format--there are multiple
+variants, each with its own characteristics. The format we will
+support here is the most common one: Microsoft Pulse Code Modulation,
+or Microsoft PCM, which represents the vast majority of WAVE files
+found on the Internet.
+
+For this format, the first 4 bytes after the size in the format
+subchunk must contain the number 1. This serves as the identifier for
+PCM. If we encounter a different value, it indicates an unsupported
+format, and we should return an error.
+
+The next 4-byte value specifies the number of audio channels. Common
+values are 1 for mono and 2 for stereo.
+
+Following that, we have 8 bytes representing the sampling rate
+(samples per second per channel). For example, CD-quality audio
+typically uses 44100, while telephone-quality audio might use 8000.
+
+The next 8 bytes represent the average number of bytes per second that
+must be transferred to play the sound. This value is typically used to
+help size streaming audio buffers. Since our implementation loads the
+entire audio into memory, we can ignore it. Similarly, the following 4
+bytes relate to block alignment in memory and are also mainly relevant
+for streaming implementations.
+
+Therefore, the only values we need to extract and store in our audio
+structure are the number of channels and the sampling rate. These
+values should be saved into our audio_data structure as follows:
+
+@<struct audio_data: Struct Variables@>=
+uint32_t channel;
+uint64_t sample_rate;
+@
+
+Below is the declaration and implementation of the function that reads
+the format subchunk:
+
+@<Local Functions Declaration (wave.c)@>+=
+bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Auxiliary Local Functions (wave.c)@>+=
+bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  char buffer[8];
+  size_t ret;
+  // Ignoring the size (WAVE in Microsoft PCM format always has same size)
+  if(fseek(fp, 4, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  // Reading format: must be 1 for Microsoft PCM
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  if(buffer[0] != 1 || buffer[1] != 0 || buffer[2] != 0 || buffer[3] != 0){
+    fprintf(stderr, "ERROR: WAV file %s is not in Microsoft PCM format.\n",
+            filename);
+    return false;
+  }
+  // Reading number of channels
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  audio -> channel = buffer[0] + 256 * buffer[1] + 256 * 256 * buffer[2] +
+                     256 * 256 * 256 * buffer[3];
+  // Reading sampling rate
+  ret = fread(buffer, 1, 8, fp);
+  if(ret != 8){
+    perror(filename);
+    return false;
+  }
+  audio -> sample_rate = buffer[0] +
+                         buffer[1] * 256 +
+			 buffer[2] * 256 * 256 +
+			 buffer[3] * 256 * 256 * 256 +
+			 buffer[4] * 256 * 256 * 256 * 256 +
+			 buffer[5] * 256 * 256 * 256 * 256 * 256 +
+			 buffer[6] * 256 * 256 * 256 * 256 * 256 * 256 +
+			 buffer[7] * 256 * 256 * 256 * 256 * 256 * 256 * 256;
+  // Ignoring next 12 bytes:
+  if(fseek(fp, 12, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  return true;
+}
+@
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

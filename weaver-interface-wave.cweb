@@ -174,6 +174,7 @@ Podemos apresentar aqui a estrutura do arquivo \monoespaco{wave.h}:
 extern "C" {
 #endif
 #include <stdbool.h> // Define tipo 'bool'
+#include <stdlib.h>
 @<Declaração de Função (wave.h)@>
 #ifdef __cplusplus
 }
@@ -204,30 +205,320 @@ associado a este cabeçaho, o código será este:
 
 @(src/wave.c@>=
 #include "wave.h"
+#include <AL/al.h>
+#include <AL/alc.h>
+#include <stdlib.h>
+#include <stdio.h>
 @<Cabeçalhos Locais (wave.c)@>
 @<Variáveis Locais (wave.c)@>
-//@<Funções Auxiliares Locais (interface.c)@>
-//@<Definição de Funções da API (interface.c)@>
+@<Declaração de Funções Locais (wave.c)@>
+@<Funções Auxiliares Locais (wave.c)@>
+@<Definição de Funções da API (wave.c)@>
 @
 
 
 Todo o código que definiremos e explicaremos a seguir será posicionado
 nestes dois arquivos. Além deles, nenhum outro arquivo será criado.
 
-\secao{2. O Formato RIFF}
+\secao{2. O Formato RIFF-WAVE}
 
-Todo arquivo WAVE é também um arquivo no formato RIFF. Então é útil
-começar analizando como um arquivo RIFF é organizado.
+Iremos criar uma função auxiliar chamada \monoespaco{interpret\_wave}
+que é quem irá fazer o grosso do trabalho para interpretar o formato
+WAVE e inicializar à partir dele um buffer OpenAL. A função será
+chamada dentro da função de extração desta forma:
 
-Primeiro que todo arquivo RIFF é um conjunto de ``pedaços'', ou
-``chunks''. Em todo arquivo do tipo há 1 ou mais pedaços.
+@<Definição de Funções da API (wave.c)@>=
+void _extract_wave(void *(*perm_alloc)(size_t),
+                   void (*perm_free)(void *),
+                   void *(*temp_alloc)(size_t),
+                   void (*temp_free)(void *),
+                   void (*before_loading_interface)(void),
+                   void (*after_loading_interface)(void),
+                   char *source_filename, void *interface){
+  struct sound *snd;
+  if(before_loading_interface != NULL)
+    before_loading_interface();
+  snd = (struct sound *) interface;
+  permanent_alloc = perm_alloc;
+  permanent_free = perm_free;
+  temporary_alloc = temp_alloc;
+  temporary_free = temp_free;
+  if(interpret_wave(source_filename, snd -> buffer))
+    snd -> _loaded_sound = true;
+  if(after_loading_interface != NULL)
+    after_loading_interface();
+}
+@
 
-Cada pedaço é composto por três partes: 4 bytes (tipicamente
-caracteres) identificando o tipo do pedaço, 4 bytes identificando o
-tamanho dos dados do pedaço, e mais uma sequência de bytes com o
+Para entender o que a função \monoespaco{interpret\_wave} deve fazer,
+vamos descrever um pouco como funciona o formato WAVE, ou melhor,
+RIFF-WAVE. Todo arquivo WAVE é também um arquivo no formato RIFF. Um
+arquivo RIFF é um conjunto de um ou mais ``pedaços'', ou
+``chunks''. Felizmente no caso específico do formato WAVE, as coisas
+são mais simples. Temos um único pedaço que compõe o arquivo.
+
+Cada pedaço é composto por três partes: 4 bytes que devem ser
+caracteres ASCII identificando o tipo do pedaço, 4 bytes identificando
+o tamanho dos dados do pedaço, e mais uma sequência de bytes com o
 tamanho indicado representando os dados. Os dados também podem ter
 bytes finais de preenchimento caso eles sejam um pouco menores que o
-tamanho indicado.
+tamanho indicado. Números devem ser lidos usando a notação ``little
+endian''. Para os arquivos WAVE, o primeiro e único pedaço do arquivo
+tem como identificador os caracteres ``RIFF''.
+
+Com estas informações, já podemos começar a ler os 8 primeiros bytes
+do arquivo:
+
+@<Funções Auxiliares Locais (wave.c)@>=
+bool interpret_wave(char *filename, ALuint buffer){
+  FILE *fp;
+  fp = fopen(filename, "r");
+  if(fp == NULL){
+    perror(filename);
+    return false;
+  }
+  {
+    char buf[4];
+    size_t ret;
+    // Lendo 'RIFF':
+    ret = fread(buf, 1, 4, fp);
+    if(ret != 4){
+      perror(filename);
+      return false;
+    }
+    if(buf[0] != 'R' || buf[1] != 'I' || buf[2] != 'F' || buf[3] != 'F'){
+      fprintf(stderr, "ERROR: %s not a RIFF file.\n", filename);
+      return false;
+    }
+    // Lendo tamanho do pedaço principal:
+    ret = fread(buf, 1, 4, fp);
+    if(ret != 4){
+      perror(filename);
+      return false;
+    }
+    @<Interpreta Arquivo WAVE@>
+  }
+  fclose(fp);
+  return true;
+}
+@
+
+Existem dois tipos de pedaços que são especiais no formato RIFF: o de
+tipo RIFF e o LIST. Não precisamos nos preocupar com o segundo. Mas
+com o primeiro sim, pois como vimos, todo o arquivo no formato WAVE é
+composto por um grande pedaço do tipo RIFF. O que estes tipos tem em
+comum é que a região de dados deles é ocupada por muitos sub-pedaços,
+seguindo a mesma regra de que cada um deles começa com um tipo formado
+por 4 caracteres ASCII, um tamanho e uma região de dados. Entretanto,
+antes de começar os subpedaços, a região contém 4 bytes contendo
+caracteres ASCII com um rótulo. No nosso caso, o rótulo é sempre
+``WAVE''. Vamos interpretar isso:
+
+@<Interpreta Arquivo WAVE@>=
+// Lendo 'WAVE':
+ret = fread(buf, 1, 4, fp);
+if(ret != 4){
+  perror(filename);
+  return false;
+}
+if(buf[0] != 'W' || buf[1] != 'A' || buf[2] != 'V' || buf[3] != 'E'){
+  fprintf(stderr, "ERROR: %s not a WAVE file.\n", filename);
+  return false;
+}
+@
+
+E depois desta parte, vem a leitura dos sub-pedaços:
+
+@<Interpreta Arquivo WAVE@>+=
+struct audio_data audio;
+while(read_chunk(fp, filename, &audio));
+@
+
+A função \monoespaco{read\_chunk} será responsável por ler um único
+pedaço e, baseando-se no conteúdo, modificar a estrutura
+\monoespaco{audio\_data} que terá tudo o que é necessário para gerar o
+nosso áudio. Enquanto ela conseguir ler um pedaço inteiro, ela deve
+retornar verdadeiro. Ao encontrar erro ou o fim do arquivo, ela
+retorna falso.
+
+Os atributos da estrutura \monoespaco{audio\_data} serão definidos
+posteriormente. Mas ela será declarada aqui:
+
+@<Variáveis Locais (wave.c)@>+=
+struct audio_data{
+  @<struct audio_data: Variáveis da Estrutura@>
+};
+@
+
+
+Vamos agora para a função que lê os sub-pedaços. O padrão especifica
+seis diferentes tipos de subpedaços para o formato WAVE. Mas na
+prática somente os dois tipos obrigatórios são amplamente empregados:
+o de tipo ``fmt '' com informações do formato que o áudio está
+armazenado e o ``data'' com os dados do áudio em si. A especificação
+prevê que qualquer sub-pedaço que não seja compreendido, deve ser
+ignorado.
+
+Nossa função que interpreta os sub-pedaços é definida assim:
+
+@<Declaração de Funções Locais (wave.c)@>=
+bool read_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Funções Auxiliares Locais (wave.c)@>+=
+bool read_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  size_t ret;
+  // Lendo o tipo do 'chunk' nos 4 primeiros caracteres
+  char type[4];
+  ret = fread(type, 1, 4, fp);
+  if(ret != 4){
+    if(feof(fp))
+      return false; // Fim do arquivo, sem erro
+    else{
+      perror(filename); // Erro
+      return false;
+    }
+  }
+  if(type[0] == 'f' && type[1] == 'm' && type[2] == 't' && type[3] == ' ')
+    return read_fmt_chunk(fp, filename, audio);
+  else if(type[0] == 'd' && type[1] == 'a' && type[2] == 't' && type[3] == 'a')
+    return read_data_chunk(fp, filename, audio);
+  else
+    return read_unknown_chunk(fp, filename, audio);
+}
+@
+
+Note que há três tipos diferentes de funções, cada uma para
+interpretar um dos tipos para os sub-pedaços. Vamos começar com a mais
+simples de todas, a que lê um sub-pedaço cujo formato nos é
+desconhecido. Iremos simplesmente ignorar todo o seu
+conteúdo. Precisamos apenas ler os próximos 4 bytes com o tamanho dos
+dados do sub-pedaço e ignorar todos os valores seguintes até o final
+do sub-pedaço:
+
+@<Declaração de Funções Locais (wave.c)@>=
+bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Funções Auxiliares Locais (wave.c)@>+=
+bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  unsigned long size;
+  char buffer[4];
+  size_t ret;
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  size = buffer[0] + (256 * buffer[1]) + (256 * 256 * buffer[2]) +
+         (256 * 256 * 256 * buffer[3]);
+  if(fseek(fp, size, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  return true;  
+}
+@
+
+O próximo subpedaço que devemos ler é o de formato. Identificado pela
+string ``fmt '' (com um espaço final para que fique com 4 bytes). A
+especificação do formato WAVE diz que este subpedaço é obrigatório e
+deve sempre vir antes do pedaço que contém os dados de áudio em si.
+
+O formato WAVE na verdade não é um só. Podem haver muitos tipos deles,
+cada um com sua própria característica. O formato que iremos suportar
+aqui é o mais comum, que representa a imensa maioria dos exemplares
+que se encontra distribuídos pela Internet. O ``Microsoft Pulse Code
+Modulation'', ou formato PCM da Microsoft.
+
+Quando estamos diante deste formato, a primeira coisa que encontramos
+no subpedaço de formato, após seu tamanho, é o número 1 ocupando 4
+bytes. Esta é a assinatura deste tipo de formato. Se encontrarmos algo
+diferente, estamos diante de outro formato não suportado e retornamos
+um erro.
+
+O próximo valor de 4 bytes lido é a quantidade de canais de
+áudio. Valores mais comuns são 1 (som monoaural) e 2 (som estéreo).
+
+Em seguida, ocupando 8 bytes, vem a taxa de amostragem por segundo em
+cada canal. O som com qualidade comparável a um CD de áudio teria o
+número 44100. A qualidade de um telefone é de 8000.
+
+Próximo valor de 8 bytes é a quantidade de bytes por segundo que devem
+ser transferidos para tocar o som. Este valor existe para auxiliar a
+calcular o tamanho do buffer de tocadores de áudio. No nosso caso,
+queremos armazenar o áudio inteiro na memória, então não precisaremos
+de tal valor. Da mesma forma, os 4 bytes seguintes tem relação ao
+alinhamento de blocos na memória e é um valor mais relevante para
+ajudar a criar buffers de reprodução quando o som não é carregado
+inteiramente para a memória.
+
+Sendo assim, os valores que são relevantes para nós são o número de
+canais e a taxa de amostragem. Tais valores devem ser armazenados na
+nossa estrutura de áudio:
+
+@<struct audio_data: Variáveis da Estrutura@>=
+uint32_t channel;
+uint64_t sample_rate;
+@
+
+E abaixo segue a declaração e implementação da função que lê o
+subpedaço de formato:
+
+@<Declaração de Funções Locais (wave.c)@>+=
+bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Funções Auxiliares Locais (wave.c)@>+=
+bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  char buffer[8];
+  size_t ret;
+  // Ignorando o tamanho (WAVE em Microsoft PCM sempre tem o mesmo tamanho)
+  if(fseek(fp, 4, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  // Lendo o tipo de áudio: deve ser 1 para Microsoft PCM
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  if(buffer[0] != 1 || buffer[1] != 0 || buffer[2] != 0 || buffer[3] != 0){
+    fprintf(stderr, "ERROR: WAV file %s is not in Microsoft PCM format.\n",
+            filename);
+    return false;
+  }
+  // Lendo o número de canais de áudio
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  audio -> channel = buffer[0] + 256 * buffer[1] + 256 * 256 * buffer[2] +
+                     256 * 256 * 256 * buffer[3];
+  // Lendo a taxa de amostragem
+  ret = fread(buffer, 1, 8, fp);
+  if(ret != 8){
+    perror(filename);
+    return false;
+  }
+  audio -> sample_rate = buffer[0] +
+                         buffer[1] * 256 +
+			 buffer[2] * 256 * 256 +
+			 buffer[3] * 256 * 256 * 256 +
+			 buffer[4] * 256 * 256 * 256 * 256 +
+			 buffer[5] * 256 * 256 * 256 * 256 * 256 +
+			 buffer[6] * 256 * 256 * 256 * 256 * 256 * 256 +
+			 buffer[7] * 256 * 256 * 256 * 256 * 256 * 256 * 256;
+  // Ignorando os próximos 12 bytes:
+  if(fseek(fp, 12, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  return true;
+}
+@
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
