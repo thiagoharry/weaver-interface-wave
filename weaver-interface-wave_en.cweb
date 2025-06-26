@@ -1,0 +1,210 @@
+\input tex/epsf.tex
+\font\sixteen=cmbx15
+\font\twelve=cmr12
+\font\fonteautor=cmbx12
+\font\fonteemail=cmtt10
+\font\twelvenegit=cmbxti12
+\font\twelvebold=cmbx12
+\font\trezebold=cmbx13
+\font\twelveit=cmsl12
+\font\monodoze=cmtt12
+\font\it=cmti12
+\voffset=0,959994cm % 3,5cm de margem superior e 2,5cm inferior
+\parskip=6pt
+
+\def\titulo#1{{\noindent\sixteen\hbox to\hsize{\hfill#1\hfill}}}
+\def\autor#1{{\noindent\fonteautor\hbox to\hsize{\hfill#1\hfill}}}
+\def\email#1{{\noindent\fonteemail\hbox to\hsize{\hfill#1\hfill}}}
+\def\negrito#1{{\twelvebold#1}}
+\def\italico#1{{\twelveit#1}}
+\def\monoespaco#1{{\monodoze#1}}
+
+\long\def\abstract#1{\parshape 10 0.8cm 13.4cm 0.8cm 13.4cm
+0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm
+0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm
+\noindent{{\twelvenegit Abstract: }\twelveit #1}}
+
+\def\resumo#1{\parshape  10 0.8cm 13.4cm 0.8cm 13.4cm
+0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm
+0.8cm 13.4cm 0.8cm 13.4cm 0.8cm 13.4cm
+\noindent{{\twelvenegit Resumo: }\twelveit #1}}
+
+\def\secao#1{\vskip12pt\noindent{\trezebold#1}\parshape 1 0cm 15cm}
+\def\subsecao#1{\vskip12pt\noindent{\twelvebold#1}}
+\def\subsubsecao#1{\vskip12pt\noindent{\negrito{#1}}}
+\def\referencia#1{\vskip6pt\parshape 5 0cm 15cm 0.5cm 14.5cm 0.5cm 14.5cm
+0.5cm 14.5cm 0.5cm 14.5cm {\twelve\noindent#1}}
+
+%@* .
+
+\twelve
+\vskip12pt
+\titulo{Weaver Interface for WAVE Format}
+\vskip12pt
+\autor{Thiago Leucz Astrizi}
+\vskip6pt
+\email{thiago@@bitbitbit.com.br}
+\vskip6pt
+
+\abstract{This article presents the implementation of support for the
+WAVE audio format in the Weaver Game Engine. In accordance with the
+engine's modular design, proper support for the WAVE format requires
+the definition of an extraction function that reads the audio file,
+obtains auxiliary functions for memory allocation and deallocation,
+and populates a sound structure with an OpenAL audio buffer.}
+
+\secao{1. Introduction}
+
+The WAVE format is one of the many types of the so-called RIFF
+format. Every RIFF file represents a generic packed data sequence. The
+WAVE format, specifically, is designed to encapsulate audio data.
+
+Our goal in this article is to define a loading function with the
+following signature:
+
+@<Function Declaration (wave.h)@>=
+void _extract_wave(void *(*permanent_alloc)(size_t),
+                   void (*permanent_free)(void *),
+                   void *(*temporary_alloc)(size_t),
+                   void (*temporary_free)(void *),
+                   void (*before_loading_interface)(void),
+                   void (*after_loading_interface)(void),
+                   char *source_filename, void *interface);
+@
+
+A function with this signature is used in the Weaver Game Engine to
+interpret audio files. Its purpose is to populate the structure
+pointed to by the last parameter. The definition of this structure can
+be accessed by including the appropriate header from the Weaver Game
+Engine:
+
+@<Local Headers (wave.c)@>=
+#include "interface.h"
+@
+
+Specifically, the structure is defined as follows:
+
+\alinhaverbatim
+struct sound {
+  (...)
+  bool _loaded_sound; // Has the sound been loaded?
+  ALuint buffer;      // References buffer containing audio data
+};
+\alinhanormal
+
+Our task is to fill the OpenAL buffer field within this
+structure. Once we are done, we must set the boolean variable above to
+true. This informs the game engine that the sound is ready for use.
+
+The buffer is populated by the loading function when it reads the
+\monoespaco{source\_filename} file, which must be in the WAVE format.
+
+The loading function is also responsible for calling the
+\monoespaco{before\_loading\_interface} function before performing any
+other actions. The internal behavior of this function is not relevant
+to us---it is used by the Weaver Game Engine to perform operations of
+its own. Similarly, after the file is loaded---or even if loading
+fails due to an error---we must call the
+\monoespaco{after\_loading\_interface} function. Again, its effects
+are not our concern. If either of these function pointers is NULL,
+they should simply be ignored and not executed.
+
+The remaining parameters received by the loading function are for data
+allocation and deallocation. We must distinguish between temporary and
+permanent allocations. Permanent allocations are meant for data that
+must remain valid after the extraction function returns. Temporary
+allocations are only needed during file reading. Each allocation
+function has a corresponding deallocation function. However, the
+deallocation function may be NULL---in such cases, we will not invoke
+it, assuming that some form of automatic memory management is in
+place.
+
+Because the allocation and deallocation functions may be needed not
+only by the extraction function but also by various auxiliary
+routines, we will store them in static global variables. If the values
+were not initialized, we will assume that we should use the allocation
+and deallocation functions from standard library.
+
+@<Local Variables (wave.c)@>=
+static void *(*permanent_alloc)(size_t) = malloc;
+static void *(*temporary_alloc)(size_t) = malloc;
+static void (*permanent_free)(void *) = free;
+static void (*temporary_free)(void *) = free;
+@
+
+\subsecao{1.1. Literate Programming}
+
+Our API will be written using the literate programming technique,
+proposed by Knuth on [Knuth, 1984]. It consist in writting a computer
+program explaining didactically in a text what is being done while
+presenting the code. The program is compiled extracting the computer
+code directly from the didactical text. The code shall be presented in
+a way and order such that it is best for explaining for a human. Not
+how it would be easier to compile.
+
+Using this technique, this document is not a simple documentation for
+our code. It is the code by itself. The part that will be extracted to
+be compiled can be identified by a gray background. We begin each
+piece of code by a title that names it. For example, immediately
+before this subsection we presented a series of function
+declarations. And how one could deduct by the title, most of them will
+be positioned in the file \monoespaco{interface.h}.
+
+We show below the structure of the file \monoespaco{wave.h}:
+
+@(src/wave.h@>=
+#ifndef __WEAVER_INTERFACE
+#define __WEAVER_INTERFACE
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <stdbool.h> // Define  'bool' type
+@<Function Declaration (wave.h)@>
+#ifdef __cplusplus
+}
+#endif
+#endif
+@
+
+The code above shows the default boilerplate for defining a header in
+our C API. The first two lines and the last one are macros that ensure
+the header is not included more than once in a single compilation
+unit. Lines 3, 4, 5, and the three lines before the last one make the
+header compatible with C++ code. These lines tell the compiler that we
+are using C code and, therefore, it can apply optimizations assuming
+that no C++-specific features---such as operator overloading---will be
+used.
+
+Next, we include a header that allows us to use boolean variables. You
+may also notice some parts highlighted in red. One of them is labeled
+``Function Declaration (wave.h)'', the same title used for most of
+the code declared earlier. This means that all previously defined code
+blocks with that title will be inserted at this point in the file. The
+other red-highlighted parts represent code that we will define in the
+following sections.
+
+If you want to understand how the \monoespaco{wave.c} file
+relates to this header, its structure is as follows:
+
+@(src/wave.c@>=
+#include "wave.h"
+@<Local Headers (wave.c)@>
+@<Local Variables (wave.c)@>
+//@<Auxiliary Local Functions (wave.c)@>
+//@<API Functions Definition (wave.c)@>
+@
+
+All the code presented in this document will be placed in one of these
+two files. No other files will be created.
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\secao{References}
+
+\referencia{Knuth, D. E. (1984) ``Literate Programming'', The Computer
+  Journal, Volume 27, Issue 2, Pages 97--111.}
+
+\fim
