@@ -193,6 +193,7 @@ relates to this header, its structure is as follows:
 #include <AL/alc.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 @<Local Headers (wave.c)@>
 @<Local Variables (wave.c)@>
 @<Local Functions Declaration (wave.c)@>
@@ -227,19 +228,24 @@ void _extract_wave(void *(*perm_alloc)(size_t),
   permanent_free = perm_free;
   temporary_alloc = temp_alloc;
   temporary_free = temp_free;
+  alGenBuffers(1, &(snd -> buffer));
   if(interpret_wave(source_filename, snd -> buffer))
     snd -> _loaded_sound = true;
+  else{
+    alDeleteBuffers(1, &(snd -> buffer));
+    snd -> buffer = 0;
+  }
   if(after_loading_interface != NULL)
     after_loading_interface();
 }
 @
 
-To understand what the interpret_wave function should do, we need to
-briefly explain how the WAVE---or more precisely, RIFF-WAVE---format
-works. Every WAVE file is also a RIFF file. A RIFF file is composed of
-one or more ``chunks''. Fortunately, in the specific case of the WAVE
-format, things are simpler: the entire file is made up of a single
-chunk.
+To understand what the \monoespaco{interpret\_wave} function should
+do, we need to briefly explain how the WAVE---or more precisely,
+RIFF-WAVE---format works. Every WAVE file is also a RIFF file. A RIFF
+file is composed of one or more ``chunks''. Fortunately, in the
+specific case of the WAVE format, things are simpler: the entire file
+is made up of a single chunk.
 
 Each chunk consists of three parts: 4 bytes containing ASCII
 characters that identify the chunk type, 4 bytes indicating the size
@@ -264,7 +270,7 @@ bool interpret_wave(char *filename, ALuint buffer){
     return false;
   }
   {
-    char buf[4];
+    unsigned char buf[4];
     size_t ret;
     // Reading 'RIFF':
     ret = fread(buf, 1, 4, fp);
@@ -320,6 +326,7 @@ After this part, we read the sub-chunks:
 
 @<Interpret WAVE File@>+=
 struct audio_data audio;
+memset(&audio, 0, sizeof(struct audio_data));
 while(read_chunk(fp, filename, &audio));
 @
 
@@ -335,7 +342,7 @@ defined later. For now, we declare it as follows:
 
 @<Local Variables (wave.c)@>+=
 struct audio_data{
-  @<struct audio_data: Struct Variables@>
+  @<struct audio\_data: Struct Variables@>
 };
 @
 
@@ -358,7 +365,7 @@ bool read_chunk(FILE *fp, char *filename, struct audio_data *);
 bool read_chunk(FILE *fp, char *filename, struct audio_data *audio){
   size_t ret;
   // Lendo o tipo do 'chunk' nos 4 primeiros caracteres
-  char type[4];
+  unsigned char type[4];
   ret = fread(type, 1, 4, fp);
   if(ret != 4){
     if(feof(fp))
@@ -393,7 +400,7 @@ bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *);
 @<Auxiliary Local Functions (wave.c)@>+=
 bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *audio){
   unsigned long size;
-  char buffer[4];
+  unsigned char buffer[4];
   size_t ret;
   ret = fread(buffer, 1, 4, fp);
   if(ret != 4){
@@ -422,32 +429,36 @@ support here is the most common one: Microsoft Pulse Code Modulation,
 or Microsoft PCM, which represents the vast majority of WAVE files
 found on the Internet.
 
-For this format, the first 4 bytes after the size in the format
+For this format, the first 2 bytes after the size in the format
 subchunk must contain the number 1. This serves as the identifier for
 PCM. If we encounter a different value, it indicates an unsupported
 format, and we should return an error.
 
-The next 4-byte value specifies the number of audio channels. Common
+The next 2-byte value specifies the number of audio channels. Common
 values are 1 for mono and 2 for stereo.
 
-Following that, we have 8 bytes representing the sampling rate
+Following that, we have 4 bytes representing the sampling rate
 (samples per second per channel). For example, CD-quality audio
 typically uses 44100, while telephone-quality audio might use 8000.
 
-The next 8 bytes represent the average number of bytes per second that
+The next 4 bytes represent the average number of bytes per second that
 must be transferred to play the sound. This value is typically used to
 help size streaming audio buffers. Since our implementation loads the
-entire audio into memory, we can ignore it. Similarly, the following 4
+entire audio into memory, we can ignore it. Similarly, the following 2
 bytes relate to block alignment in memory and are also mainly relevant
 for streaming implementations.
 
-Therefore, the only values we need to extract and store in our audio
-structure are the number of channels and the sampling rate. These
-values should be saved into our audio_data structure as follows:
+Finally, we conclude with the next 2 bytes, which indicate the number
+of bits per audio sample.
 
-@<struct audio_data: Struct Variables@>=
-uint32_t channel;
-uint64_t sample_rate;
+Therefore, the only values we need to extract and store in our audio
+structure are the number of channels, the sampling rate and number of
+bits per sample. These values should be saved into our
+\monoespaco{audio\_data} structure as follows:
+
+@<struct audio\_data: Struct Variables@>=
+uint16_t channel, bits_per_sample;
+uint32_t sample_rate;
 @
 
 Below is the declaration and implementation of the function that reads
@@ -459,7 +470,7 @@ bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *);
 
 @<Auxiliary Local Functions (wave.c)@>+=
 bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
-  char buffer[8];
+  unsigned char buffer[4];
   size_t ret;
   // Ignoring the size (WAVE in Microsoft PCM format always has same size)
   if(fseek(fp, 4, SEEK_CUR) != 0){
@@ -467,46 +478,160 @@ bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
     return false;
   }
   // Reading format: must be 1 for Microsoft PCM
-  ret = fread(buffer, 1, 4, fp);
-  if(ret != 4){
+  ret = fread(buffer, 1, 2, fp);
+  if(ret != 2){
     perror(filename);
     return false;
   }
-  if(buffer[0] != 1 || buffer[1] != 0 || buffer[2] != 0 || buffer[3] != 0){
+  if(buffer[0] != 1 || buffer[1] != 0){
     fprintf(stderr, "ERROR: WAV file %s is not in Microsoft PCM format.\n",
             filename);
     return false;
   }
   // Reading number of channels
-  ret = fread(buffer, 1, 4, fp);
-  if(ret != 4){
+  ret = fread(buffer, 1, 2, fp);
+  if(ret != 2){
     perror(filename);
     return false;
   }
-  audio -> channel = buffer[0] + 256 * buffer[1] + 256 * 256 * buffer[2] +
-                     256 * 256 * 256 * buffer[3];
+  audio -> channel = buffer[0] + 256 * buffer[1];
   // Reading sampling rate
-  ret = fread(buffer, 1, 8, fp);
-  if(ret != 8){
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
     perror(filename);
     return false;
   }
   audio -> sample_rate = buffer[0] +
                          buffer[1] * 256 +
 			 buffer[2] * 256 * 256 +
-			 buffer[3] * 256 * 256 * 256 +
-			 buffer[4] * 256 * 256 * 256 * 256 +
-			 buffer[5] * 256 * 256 * 256 * 256 * 256 +
-			 buffer[6] * 256 * 256 * 256 * 256 * 256 * 256 +
-			 buffer[7] * 256 * 256 * 256 * 256 * 256 * 256 * 256;
-  // Ignoring next 12 bytes:
-  if(fseek(fp, 12, SEEK_CUR) != 0){
+			 buffer[3] * 256 * 256 * 256;
+  // Ignoring next 6 bytes:
+  if(fseek(fp, 6, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  // Reading number of bits per sample:
+  ret = fread(buffer, 1, 2, fp);
+  if(ret != 2){
+    perror(filename);
+    return false;
+  }
+  audio -> bits_per_sample = buffer[0] + 256 * buffer[1];
+  return true;
+}
+@
+
+Finally, we reach the data subchunk. This is where we find the raw
+waveform samples that represent the actual sound. Later, we will need
+to copy these samples into an OpenAL buffer. But before that, we must
+store them in our audio structure:
+
+@<struct audio\_data: Struct Variables@>+=
+bool initialized;
+size_t buffer_size;
+unsigned char *buffer;
+@
+
+We added a boolean variable to the structure, which should be set to
+true once the buffer is filled. This prevents multiple initializations
+and data loss in the event that we encounter a malformed file
+containing multiple data subchunks. In such cases, only the first
+subchunk will be processed, and the others can be safely ignored. This
+situation should never occur with well-formed files, but we must
+account for the possibility of corrupted or non-compliant input.
+
+The function that processes the data subchunk is:
+
+@<Local Functions Declaration (wave.c)@>+=
+bool read_data_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Auxiliary Local Functions (wave.c)@>+=
+bool read_data_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  unsigned char buffer[4];
+  size_t size, ret;
+  // Reading the size
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  size = buffer[0] +
+         buffer[1] * 256 +
+	 buffer[2] * 256 * 256 +
+         buffer[3] * 256 * 256 * 256;
+  if(audio -> initialized){
+    // If the audio data was already extracted in this file, ignore this chunk
+    if(fseek(fp, size, SEEK_CUR) != 0){
+      perror(filename);
+      return false;
+    }
+    return true;
+  }
+  // Otherwise, allocate memory in the buffer and copy the data from this
+  // chunk:
+  audio -> buffer = (unsigned char *) temporary_alloc(size);
+  if(audio -> buffer == NULL){
+    fprintf(stderr, "ERROR: No memory to copy audio data from %s.\n",
+            filename);
+    return false;
+  }
+  audio -> buffer_size = size;
+  ret = fread(audio -> buffer, 1, size, fp);
+  if(ret != size){
     perror(filename);
     return false;
   }
   return true;
 }
 @
+
+With this, we have completed all the code needed to interpret WAVE
+files into an audio data structure. The final step is to transfer the
+contents of this structure into our OpenAL buffer:
+
+@<Interpret WAVE File@>+=
+{
+  ALenum error, format = 0;
+  if(audio.channel == 1){
+    if(audio.bits_per_sample == 8)
+      format = AL_FORMAT_MONO8;
+    else if(audio.bits_per_sample == 16)
+      format = AL_FORMAT_MONO16;
+  }
+  else if(audio.channel == 2){
+    if(audio.bits_per_sample == 8)
+      format = AL_FORMAT_STEREO8;
+    else if(audio.bits_per_sample == 16)
+      format = AL_FORMAT_STEREO16;
+  }
+  else{
+    fprintf(stderr, "ERROR: %s has %d channels, but we support at most 2.\n",
+            filename, audio.channel);
+    return false;
+  }
+  if(audio.bits_per_sample != 8 && audio.bits_per_sample != 16){
+    fprintf(stderr, "ERROR: %s uses %d bits per sample, but we support "
+            "only 8 or 16.\n", filename, audio.bits_per_sample);
+    return false;
+  }
+  alBufferData(buffer, format, audio.buffer, audio.buffer_size,
+               audio.sample_rate);
+  error = alGetError();
+  if(error == AL_OUT_OF_MEMORY){
+    fprintf(stderr, "ERROR: OpenAL: No memory!\n");
+    return false;
+  }
+  else if(error != AL_NO_ERROR){
+    fprintf(stderr, "ERROR: %s: OpenAL: Unexpected error.\n");
+    return false;
+  }
+  temporary_free(audio.buffer);
+  return true;
+}
+@
+
+And that concludes all the operations required to interpret a WAVE file.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

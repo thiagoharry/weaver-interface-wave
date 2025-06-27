@@ -7,14 +7,22 @@
 #include <sys/time.h>
 #endif
 
+#include <AL/al.h>
+#include <AL/alc.h>
+
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #endif
 
 #include "../src/interface.h"
+#include "../src/wave.h"
 
 #include <AL/al.h>
 #include <AL/alc.h>
+
+ALCdevice *device;
+ALCcontext *context;
+ALuint source;
 
 int numero_de_testes = 0, acertos = 0, falhas = 0;
 void imprime_resultado(void){
@@ -52,8 +60,33 @@ void assert(char *descricao, bool valor){
   }
 }
 
+void test_audio_mouseclick(void){
+  struct sound s;
+  int source_state;
+  _extract_wave(malloc, free, malloc, free, NULL, NULL,
+		"tests/samples/mouseclick.wav", &s);
+  alSourcei(source, AL_BUFFER, s.buffer);
+  alSourcePlay(source);
+  alGetSourcei(source, AL_SOURCE_STATE, &source_state);
+  while (source_state == AL_PLAYING) {
+    alGetSourcei(source, AL_SOURCE_STATE, &source_state);
+  }
+  assert("Interpreting file mouseclick.wav", s._loaded_sound &&
+	 s.buffer != 0 && alGetError() == AL_NO_ERROR);
+}
 
 int main(int argc, char **argv){
+  device = alcOpenDevice(NULL);
+  alGetError();
+  context = alcCreateContext(device, NULL);
+  alcMakeContextCurrent(context);
+  alGenSources((ALuint)1, &source);
+  alSourcef(source, AL_PITCH, 1);
+  alSourcef(source, AL_GAIN, 1);
+  alSource3f(source, AL_POSITION, 0, 0, 0);
+  alSource3f(source, AL_VELOCITY, 0, 0, 0);
+  alSourcei(source, AL_LOOPING, AL_FALSE);
+  test_audio_mouseclick();
   imprime_resultado();
   return 0;
 }

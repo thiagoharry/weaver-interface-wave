@@ -1,58 +1,69 @@
 /*5:*/
-#line 190 "weaver-interface-wave_en.cweb"
+#line 206 "weaver-interface-wave.cweb"
 
 #include "wave.h"
 #include <AL/al.h> 
 #include <AL/alc.h> 
 #include <stdlib.h> 
 #include <stdio.h> 
+#include <string.h> 
 /*2:*/
-#line 81 "weaver-interface-wave_en.cweb"
+#line 91 "weaver-interface-wave.cweb"
 
 #include "interface.h"
 /*:2*/
-#line 196 "weaver-interface-wave_en.cweb"
+#line 213 "weaver-interface-wave.cweb"
 
 /*3:*/
-#line 128 "weaver-interface-wave_en.cweb"
+#line 140 "weaver-interface-wave.cweb"
 
 static void*(*permanent_alloc)(size_t)= malloc;
 static void*(*temporary_alloc)(size_t)= malloc;
 static void(*permanent_free)(void*)= free;
 static void(*temporary_free)(void*)= free;
 /*:3*//*10:*/
-#line 336 "weaver-interface-wave_en.cweb"
+#line 354 "weaver-interface-wave.cweb"
 
 struct audio_data{
 /*15:*/
-#line 448 "weaver-interface-wave_en.cweb"
+#line 471 "weaver-interface-wave.cweb"
 
-uint32_t channel;
-uint64_t sample_rate;
-/*:15*/
-#line 338 "weaver-interface-wave_en.cweb"
+uint16_t channel,bits_per_sample;
+uint32_t sample_rate;
+/*:15*//*18:*/
+#line 542 "weaver-interface-wave.cweb"
+
+bool initialized;
+size_t buffer_size;
+unsigned char*buffer;
+/*:18*/
+#line 356 "weaver-interface-wave.cweb"
 
 };
 /*:10*/
-#line 197 "weaver-interface-wave_en.cweb"
+#line 214 "weaver-interface-wave.cweb"
 
 /*11:*/
-#line 353 "weaver-interface-wave_en.cweb"
+#line 371 "weaver-interface-wave.cweb"
 
 bool read_chunk(FILE*fp,char*filename,struct audio_data*);
 /*:11*//*13:*/
-#line 389 "weaver-interface-wave_en.cweb"
+#line 406 "weaver-interface-wave.cweb"
 
 bool read_unknown_chunk(FILE*fp,char*filename,struct audio_data*);
 /*:13*//*16:*/
-#line 456 "weaver-interface-wave_en.cweb"
+#line 479 "weaver-interface-wave.cweb"
 
 bool read_fmt_chunk(FILE*fp,char*filename,struct audio_data*);
-/*:16*/
-#line 198 "weaver-interface-wave_en.cweb"
+/*:16*//*19:*/
+#line 558 "weaver-interface-wave.cweb"
+
+bool read_data_chunk(FILE*fp,char*filename,struct audio_data*);
+/*:19*/
+#line 215 "weaver-interface-wave.cweb"
 
 /*7:*/
-#line 258 "weaver-interface-wave_en.cweb"
+#line 278 "weaver-interface-wave.cweb"
 
 bool interpret_wave(char*filename,ALuint buffer){
 FILE*fp;
@@ -62,7 +73,7 @@ perror(filename);
 return false;
 }
 {
-char buf[4];
+unsigned char buf[4];
 size_t ret;
 
 ret= fread(buf,1,4,fp);
@@ -81,7 +92,7 @@ perror(filename);
 return false;
 }
 /*8:*/
-#line 306 "weaver-interface-wave_en.cweb"
+#line 323 "weaver-interface-wave.cweb"
 
 
 ret= fread(buf,1,4,fp);
@@ -94,24 +105,71 @@ fprintf(stderr,"ERROR: %s not a WAVE file.\n",filename);
 return false;
 }
 /*:8*//*9:*/
-#line 321 "weaver-interface-wave_en.cweb"
+#line 338 "weaver-interface-wave.cweb"
 
 struct audio_data audio;
+memset(&audio,0,sizeof(struct audio_data));
 while(read_chunk(fp,filename,&audio));
-/*:9*/
-#line 285 "weaver-interface-wave_en.cweb"
+/*:9*//*21:*/
+#line 606 "weaver-interface-wave.cweb"
+
+{
+ALCenum error;
+ALenum format= 0;
+if(audio.channel==1){
+if(audio.bits_per_sample==8)
+format= AL_FORMAT_MONO8;
+else if(audio.bits_per_sample==16)
+format= AL_FORMAT_MONO16;
+}
+else if(audio.channel==2){
+if(audio.bits_per_sample==8)
+format= AL_FORMAT_STEREO8;
+else if(audio.bits_per_sample==16)
+format= AL_FORMAT_STEREO16;
+}
+else{
+fprintf(stderr,"ERROR: %s has %d channels, but we support at most 2.\n",
+filename,audio.channel);
+return false;
+}
+if(audio.bits_per_sample!=8&&audio.bits_per_sample!=16){
+fprintf(stderr,"ERROR: %s uses %d bits per sample, but we support "
+"only 8 or 16.\n",filename,audio.bits_per_sample);
+return false;
+}
+alBufferData(buffer,format,audio.buffer,audio.buffer_size,
+audio.sample_rate);
+error= alGetError();
+if(error==AL_OUT_OF_MEMORY){
+fprintf(stderr,"ERROR: OpenAL: No memory!\n");
+return false;
+}
+else if(error==AL_INVALID_VALUE){
+fprintf(stderr,
+"ERROR: %s: OpenAL: Invalid size %lu, data is NULL (%p) or "
+"buffer is in use.\n",
+filename,audio.buffer_size,audio.buffer);
+return false;
+}
+temporary_free(audio.buffer);
+
+return true;
+}
+/*:21*/
+#line 305 "weaver-interface-wave.cweb"
 
 }
 fclose(fp);
 return true;
 }
 /*:7*//*12:*/
-#line 357 "weaver-interface-wave_en.cweb"
+#line 375 "weaver-interface-wave.cweb"
 
 bool read_chunk(FILE*fp,char*filename,struct audio_data*audio){
 size_t ret;
 
-char type[4];
+unsigned char type[4];
 ret= fread(type,1,4,fp);
 if(ret!=4){
 if(feof(fp))
@@ -129,11 +187,11 @@ else
 return read_unknown_chunk(fp,filename,audio);
 }
 /*:12*//*14:*/
-#line 393 "weaver-interface-wave_en.cweb"
+#line 410 "weaver-interface-wave.cweb"
 
 bool read_unknown_chunk(FILE*fp,char*filename,struct audio_data*audio){
 unsigned long size;
-char buffer[4];
+unsigned char buffer[4];
 size_t ret;
 ret= fread(buffer,1,4,fp);
 if(ret!=4){
@@ -142,6 +200,7 @@ return false;
 }
 size= buffer[0]+(256*buffer[1])+(256*256*buffer[2])+
 (256*256*256*buffer[3]);
+printf("size: %lu\n",size);
 if(fseek(fp,size,SEEK_CUR)!=0){
 perror(filename);
 return false;
@@ -149,10 +208,10 @@ return false;
 return true;
 }
 /*:14*//*17:*/
-#line 460 "weaver-interface-wave_en.cweb"
+#line 483 "weaver-interface-wave.cweb"
 
 bool read_fmt_chunk(FILE*fp,char*filename,struct audio_data*audio){
-char buffer[8];
+unsigned char buffer[4];
 size_t ret;
 
 if(fseek(fp,4,SEEK_CUR)!=0){
@@ -160,50 +219,92 @@ perror(filename);
 return false;
 }
 
-ret= fread(buffer,1,4,fp);
-if(ret!=4){
+ret= fread(buffer,1,2,fp);
+if(ret!=2){
 perror(filename);
 return false;
 }
-if(buffer[0]!=1||buffer[1]!=0||buffer[2]!=0||buffer[3]!=0){
+if(buffer[0]!=1||buffer[1]!=0){
 fprintf(stderr,"ERROR: WAV file %s is not in Microsoft PCM format.\n",
 filename);
 return false;
 }
 
-ret= fread(buffer,1,4,fp);
-if(ret!=4){
+ret= fread(buffer,1,2,fp);
+if(ret!=2){
 perror(filename);
 return false;
 }
-audio->channel= buffer[0]+256*buffer[1]+256*256*buffer[2]+
-256*256*256*buffer[3];
+audio->channel= buffer[0]+256*buffer[1];
 
-ret= fread(buffer,1,8,fp);
-if(ret!=8){
+ret= fread(buffer,1,4,fp);
+if(ret!=4){
 perror(filename);
 return false;
 }
 audio->sample_rate= buffer[0]+
 buffer[1]*256+
 buffer[2]*256*256+
-buffer[3]*256*256*256+
-buffer[4]*256*256*256*256+
-buffer[5]*256*256*256*256*256+
-buffer[6]*256*256*256*256*256*256+
-buffer[7]*256*256*256*256*256*256*256;
+buffer[3]*256*256*256;
 
-if(fseek(fp,12,SEEK_CUR)!=0){
+if(fseek(fp,6,SEEK_CUR)!=0){
+perror(filename);
+return false;
+}
+
+ret= fread(buffer,1,2,fp);
+if(ret!=2){
+perror(filename);
+return false;
+}
+audio->bits_per_sample= buffer[0]+256*buffer[1];
+return true;
+}
+/*:17*//*20:*/
+#line 562 "weaver-interface-wave.cweb"
+
+bool read_data_chunk(FILE*fp,char*filename,struct audio_data*audio){
+unsigned char buffer[4];
+size_t size,ret;
+
+ret= fread(buffer,1,4,fp);
+if(ret!=4){
+perror(filename);
+return false;
+}
+size= buffer[0]+
+buffer[1]*256+
+buffer[2]*256*256+
+buffer[3]*256*256*256;
+if(audio->initialized){
+
+if(fseek(fp,size,SEEK_CUR)!=0){
 perror(filename);
 return false;
 }
 return true;
 }
-/*:17*/
-#line 199 "weaver-interface-wave_en.cweb"
+
+
+audio->buffer= (unsigned char*)temporary_alloc(size);
+if(audio->buffer==NULL){
+fprintf(stderr,"ERROR: No memory to copy audio data from %s.\n",
+filename);
+return false;
+}
+audio->buffer_size= size;
+ret= fread(audio->buffer,1,size,fp);
+if(ret!=size){
+perror(filename);
+return false;
+}
+return true;
+}
+/*:20*/
+#line 216 "weaver-interface-wave.cweb"
 
 /*6:*/
-#line 214 "weaver-interface-wave_en.cweb"
+#line 231 "weaver-interface-wave.cweb"
 
 void _extract_wave(void*(*perm_alloc)(size_t),
 void(*perm_free)(void*),
@@ -220,12 +321,17 @@ permanent_alloc= perm_alloc;
 permanent_free= perm_free;
 temporary_alloc= temp_alloc;
 temporary_free= temp_free;
+alGenBuffers(1,&(snd->buffer));
 if(interpret_wave(source_filename,snd->buffer))
 snd->_loaded_sound= true;
+else{
+alDeleteBuffers(1,&(snd->buffer));
+snd->buffer= 0;
+}
 if(after_loading_interface!=NULL)
 after_loading_interface();
 }
 /*:6*/
-#line 200 "weaver-interface-wave_en.cweb"
+#line 217 "weaver-interface-wave.cweb"
 
 /*:5*/

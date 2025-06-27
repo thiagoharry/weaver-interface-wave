@@ -209,6 +209,7 @@ associado a este cabeçaho, o código será este:
 #include <AL/alc.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 @<Cabeçalhos Locais (wave.c)@>
 @<Variáveis Locais (wave.c)@>
 @<Declaração de Funções Locais (wave.c)@>
@@ -243,8 +244,13 @@ void _extract_wave(void *(*perm_alloc)(size_t),
   permanent_free = perm_free;
   temporary_alloc = temp_alloc;
   temporary_free = temp_free;
+  alGenBuffers(1, &(snd -> buffer));
   if(interpret_wave(source_filename, snd -> buffer))
     snd -> _loaded_sound = true;
+  else{
+    alDeleteBuffers(1, &(snd -> buffer));
+    snd -> buffer = 0;
+  }
   if(after_loading_interface != NULL)
     after_loading_interface();
 }
@@ -278,7 +284,7 @@ bool interpret_wave(char *filename, ALuint buffer){
     return false;
   }
   {
-    char buf[4];
+    unsigned char buf[4];
     size_t ret;
     // Lendo 'RIFF':
     ret = fread(buf, 1, 4, fp);
@@ -331,6 +337,7 @@ E depois desta parte, vem a leitura dos sub-pedaços:
 
 @<Interpreta Arquivo WAVE@>+=
 struct audio_data audio;
+memset(&audio, 0, sizeof(struct audio_data));
 while(read_chunk(fp, filename, &audio));
 @
 
@@ -346,7 +353,7 @@ posteriormente. Mas ela será declarada aqui:
 
 @<Variáveis Locais (wave.c)@>+=
 struct audio_data{
-  @<struct audio_data: Variáveis da Estrutura@>
+  @<struct audio\_data: Variáveis da Estrutura@>
 };
 @
 
@@ -369,7 +376,7 @@ bool read_chunk(FILE *fp, char *filename, struct audio_data *);
 bool read_chunk(FILE *fp, char *filename, struct audio_data *audio){
   size_t ret;
   // Lendo o tipo do 'chunk' nos 4 primeiros caracteres
-  char type[4];
+  unsigned char type[4];
   ret = fread(type, 1, 4, fp);
   if(ret != 4){
     if(feof(fp))
@@ -403,7 +410,7 @@ bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *);
 @<Funções Auxiliares Locais (wave.c)@>+=
 bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *audio){
   unsigned long size;
-  char buffer[4];
+  unsigned char buffer[4];
   size_t ret;
   ret = fread(buffer, 1, 4, fp);
   if(ret != 4){
@@ -412,6 +419,7 @@ bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *audio){
   }
   size = buffer[0] + (256 * buffer[1]) + (256 * 256 * buffer[2]) +
          (256 * 256 * 256 * buffer[3]);
+  printf("size: %lu\n", size);
   if(fseek(fp, size, SEEK_CUR) != 0){
     perror(filename);
     return false;
@@ -432,34 +440,37 @@ que se encontra distribuídos pela Internet. O ``Microsoft Pulse Code
 Modulation'', ou formato PCM da Microsoft.
 
 Quando estamos diante deste formato, a primeira coisa que encontramos
-no subpedaço de formato, após seu tamanho, é o número 1 ocupando 4
+no subpedaço de formato, após seu tamanho, é o número 1 ocupando 2
 bytes. Esta é a assinatura deste tipo de formato. Se encontrarmos algo
 diferente, estamos diante de outro formato não suportado e retornamos
 um erro.
 
-O próximo valor de 4 bytes lido é a quantidade de canais de
+O próximo valor de 2 bytes lido é a quantidade de canais de
 áudio. Valores mais comuns são 1 (som monoaural) e 2 (som estéreo).
 
-Em seguida, ocupando 8 bytes, vem a taxa de amostragem por segundo em
+Em seguida, ocupando 4 bytes, vem a taxa de amostragem por segundo em
 cada canal. O som com qualidade comparável a um CD de áudio teria o
 número 44100. A qualidade de um telefone é de 8000.
 
-Próximo valor de 8 bytes é a quantidade de bytes por segundo que devem
+Próximo valor de 4 bytes é a quantidade de bytes por segundo que devem
 ser transferidos para tocar o som. Este valor existe para auxiliar a
 calcular o tamanho do buffer de tocadores de áudio. No nosso caso,
 queremos armazenar o áudio inteiro na memória, então não precisaremos
-de tal valor. Da mesma forma, os 4 bytes seguintes tem relação ao
+de tal valor. Da mesma forma, os 2 bytes seguintes tem relação ao
 alinhamento de blocos na memória e é um valor mais relevante para
 ajudar a criar buffers de reprodução quando o som não é carregado
 inteiramente para a memória.
 
-Sendo assim, os valores que são relevantes para nós são o número de
-canais e a taxa de amostragem. Tais valores devem ser armazenados na
-nossa estrutura de áudio:
+Finalmente, terminamos com 2 próximos bytes informando a quantidade de
+bits que cada amostra de som tem.
 
-@<struct audio_data: Variáveis da Estrutura@>=
-uint32_t channel;
-uint64_t sample_rate;
+Sendo assim, os valores que são relevantes para nós são o número de
+canais, a taxa de amostragem e quantos bits cada amostra ocupa. Tais
+valores devem ser armazenados na nossa estrutura de áudio:
+
+@<struct audio\_data: Variáveis da Estrutura@>=
+uint16_t channel, bits_per_sample;
+uint32_t sample_rate;
 @
 
 E abaixo segue a declaração e implementação da função que lê o
@@ -471,7 +482,7 @@ bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *);
 
 @<Funções Auxiliares Locais (wave.c)@>+=
 bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
-  char buffer[8];
+  unsigned char buffer[4];
   size_t ret;
   // Ignorando o tamanho (WAVE em Microsoft PCM sempre tem o mesmo tamanho)
   if(fseek(fp, 4, SEEK_CUR) != 0){
@@ -479,40 +490,108 @@ bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
     return false;
   }
   // Lendo o tipo de áudio: deve ser 1 para Microsoft PCM
-  ret = fread(buffer, 1, 4, fp);
-  if(ret != 4){
+  ret = fread(buffer, 1, 2, fp);
+  if(ret != 2){
     perror(filename);
     return false;
   }
-  if(buffer[0] != 1 || buffer[1] != 0 || buffer[2] != 0 || buffer[3] != 0){
+  if(buffer[0] != 1 || buffer[1] != 0){
     fprintf(stderr, "ERROR: WAV file %s is not in Microsoft PCM format.\n",
             filename);
     return false;
   }
   // Lendo o número de canais de áudio
-  ret = fread(buffer, 1, 4, fp);
-  if(ret != 4){
+  ret = fread(buffer, 1, 2, fp);
+  if(ret != 2){
     perror(filename);
     return false;
   }
-  audio -> channel = buffer[0] + 256 * buffer[1] + 256 * 256 * buffer[2] +
-                     256 * 256 * 256 * buffer[3];
+  audio -> channel = buffer[0] + 256 * buffer[1];
   // Lendo a taxa de amostragem
-  ret = fread(buffer, 1, 8, fp);
-  if(ret != 8){
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
     perror(filename);
     return false;
   }
   audio -> sample_rate = buffer[0] +
                          buffer[1] * 256 +
 			 buffer[2] * 256 * 256 +
-			 buffer[3] * 256 * 256 * 256 +
-			 buffer[4] * 256 * 256 * 256 * 256 +
-			 buffer[5] * 256 * 256 * 256 * 256 * 256 +
-			 buffer[6] * 256 * 256 * 256 * 256 * 256 * 256 +
-			 buffer[7] * 256 * 256 * 256 * 256 * 256 * 256 * 256;
-  // Ignorando os próximos 12 bytes:
-  if(fseek(fp, 12, SEEK_CUR) != 0){
+			 buffer[3] * 256 * 256 * 256;
+  // Ignorando os próximos 6 bytes:
+  if(fseek(fp, 6, SEEK_CUR) != 0){
+    perror(filename);
+    return false;
+  }
+  // Lendo a quantidade de bits por amostra:
+  ret = fread(buffer, 1, 2, fp);
+  if(ret != 2){
+    perror(filename);
+    return false;
+  }
+  audio -> bits_per_sample = buffer[0] + 256 * buffer[1];
+  return true;
+}
+@
+
+Por fim, vamos ao subpedaço de de dados. Nele é onde encontramos em
+estado bruto as amostragens da onda sonora que corresponde ao nosso
+som. O que temos que fazer posteriormente é copiar as amostragens para
+um buffer no OpenAL. Mas antes devemos armazenar elas na nossa
+estrutura de áudio:
+
+@<struct audio\_data: Variáveis da Estrutura@>+=
+bool initialized;
+size_t buffer_size;
+unsigned char *buffer;
+@
+
+Criamos na estrutura uma variável booleana que deve ser ajustada para
+verdadeira quando o buffer for preenchido. Isso irá evitar que façamos
+várias inicializações e comecemos a perder dados caso encontremos um
+arquivo incorreto que possui vários subpedaços de dados. Em tais
+casos, somente o primeiro subpedaço será lido e os demais poderão ser
+ignorados. Isso nunca ocorrerá com arquivos bem-formados, mas devemos
+nos precaver contra arquivos com problemas.
+
+A função que processa o sub-pedaço de dados é:
+
+@<Declaração de Funções Locais (wave.c)@>+=
+bool read_data_chunk(FILE *fp, char *filename, struct audio_data *);
+@
+
+@<Funções Auxiliares Locais (wave.c)@>+=
+bool read_data_chunk(FILE *fp, char *filename, struct audio_data *audio){
+  unsigned char buffer[4];
+  size_t size, ret;
+  // Lendo o tamanho
+  ret = fread(buffer, 1, 4, fp);
+  if(ret != 4){
+    perror(filename);
+    return false;
+  }
+  size = buffer[0] +
+         buffer[1] * 256 +
+	 buffer[2] * 256 * 256 +
+         buffer[3] * 256 * 256 * 256;
+  if(audio -> initialized){
+    // Se os dados já forma lidos, ignorar este sub-pedaço
+    if(fseek(fp, size, SEEK_CUR) != 0){
+      perror(filename);
+      return false;
+    }
+    return true;
+  }
+  // Se os dados não foram lidos, alocar o buffer e copiar o conteúdo do
+  // sub-caminho:
+  audio -> buffer = (unsigned char *) temporary_alloc(size);
+  if(audio -> buffer == NULL){
+    fprintf(stderr, "ERROR: No memory to copy audio data from %s.\n",
+            filename);
+    return false;
+  }
+  audio -> buffer_size = size;
+  ret = fread(audio -> buffer, 1, size, fp);
+  if(ret != size){
     perror(filename);
     return false;
   }
@@ -520,6 +599,52 @@ bool read_fmt_chunk(FILE *fp, char *filename, struct audio_data *audio){
 }
 @
 
+Com isso, já escrevemos todo o código que interpreta arquivos WAVE
+para uma estrutura de dados de áudio. Resta agora passarmos o conteúdo
+da estrutura de dados para o nosso buffer OpenAL:
+
+@<Interpreta Arquivo WAVE@>+=
+{
+  ALenum error, format = 0;
+  if(audio.channel == 1){
+    if(audio.bits_per_sample == 8)
+      format = AL_FORMAT_MONO8;
+    else if(audio.bits_per_sample == 16)
+      format = AL_FORMAT_MONO16;
+  }
+  else if(audio.channel == 2){
+    if(audio.bits_per_sample == 8)
+      format = AL_FORMAT_STEREO8;
+    else if(audio.bits_per_sample == 16)
+      format = AL_FORMAT_STEREO16;
+  }
+  else{
+    fprintf(stderr, "ERROR: %s has %d channels, but we support at most 2.\n",
+            filename, audio.channel);
+    return false;
+  }
+  if(audio.bits_per_sample != 8 && audio.bits_per_sample != 16){
+    fprintf(stderr, "ERROR: %s uses %d bits per sample, but we support "
+            "only 8 or 16.\n", filename, audio.bits_per_sample);
+    return false;
+  }
+  alBufferData(buffer, format, audio.buffer, audio.buffer_size,
+               audio.sample_rate);
+  error = alGetError();
+  if(error == AL_OUT_OF_MEMORY){
+    fprintf(stderr, "ERROR: OpenAL: No memory!\n");
+    return false;
+  }
+  else if(error != AL_NO_ERROR){
+    fprintf(stderr, "ERROR: %s: OpenAL: Unexpected error.\n");
+    return false;
+  }
+  temporary_free(audio.buffer);
+  return true;
+}
+@
+
+E isso conclui todas as operações necessárias para interpretar um arquivo WAVE.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
