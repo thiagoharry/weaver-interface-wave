@@ -148,6 +148,7 @@ else if(error!=AL_NO_ERROR){
 fprintf(stderr,"ERROR: %s: OpenAL: Unexpected error.\n",filename);
 return false;
 }
+if(temporary_free!=NULL)
 temporary_free(audio.buffer);
 return true;
 }

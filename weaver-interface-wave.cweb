@@ -639,7 +639,8 @@ da estrutura de dados para o nosso buffer OpenAL:
     fprintf(stderr, "ERROR: %s: OpenAL: Unexpected error.\n", filename);
     return false;
   }
-  temporary_free(audio.buffer);
+  if(temporary_free != NULL)
+    temporary_free(audio.buffer);
   return true;
 }
 @
