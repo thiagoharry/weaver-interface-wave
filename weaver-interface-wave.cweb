@@ -391,7 +391,7 @@ bool read_chunk(FILE *fp, char *filename, struct audio_data *audio){
   else if(type[0] == 'd' && type[1] == 'a' && type[2] == 't' && type[3] == 'a')
     return read_data_chunk(fp, filename, audio);
   else
-    return read_unknown_chunk(fp, filename, audio);
+    return read_unknown_chunk(fp, filename);
 }
 @
 
@@ -404,11 +404,11 @@ dados do sub-pedaço e ignorar todos os valores seguintes até o final
 do sub-pedaço:
 
 @<Declaração de Funções Locais (wave.c)@>=
-bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *);
+bool read_unknown_chunk(FILE *fp, char *filename);
 @
 
 @<Funções Auxiliares Locais (wave.c)@>+=
-bool read_unknown_chunk(FILE *fp, char *filename, struct audio_data *audio){
+bool read_unknown_chunk(FILE *fp, char *filename){
   unsigned long size;
   unsigned char buffer[4];
   size_t ret;
@@ -636,7 +636,7 @@ da estrutura de dados para o nosso buffer OpenAL:
     return false;
   }
   else if(error != AL_NO_ERROR){
-    fprintf(stderr, "ERROR: %s: OpenAL: Unexpected error.\n");
+    fprintf(stderr, "ERROR: %s: OpenAL: Unexpected error.\n", filename);
     return false;
   }
   temporary_free(audio.buffer);

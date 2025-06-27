@@ -50,7 +50,7 @@ bool read_chunk(FILE*fp,char*filename,struct audio_data*);
 /*:11*//*13:*/
 #line 406 "weaver-interface-wave.cweb"
 
-bool read_unknown_chunk(FILE*fp,char*filename,struct audio_data*);
+bool read_unknown_chunk(FILE*fp,char*filename);
 /*:13*//*16:*/
 #line 479 "weaver-interface-wave.cweb"
 
@@ -114,8 +114,7 @@ while(read_chunk(fp,filename,&audio));
 #line 606 "weaver-interface-wave.cweb"
 
 {
-ALCenum error;
-ALenum format= 0;
+ALenum error,format= 0;
 if(audio.channel==1){
 if(audio.bits_per_sample==8)
 format= AL_FORMAT_MONO8;
@@ -145,15 +144,11 @@ if(error==AL_OUT_OF_MEMORY){
 fprintf(stderr,"ERROR: OpenAL: No memory!\n");
 return false;
 }
-else if(error==AL_INVALID_VALUE){
-fprintf(stderr,
-"ERROR: %s: OpenAL: Invalid size %lu, data is NULL (%p) or "
-"buffer is in use.\n",
-filename,audio.buffer_size,audio.buffer);
+else if(error!=AL_NO_ERROR){
+fprintf(stderr,"ERROR: %s: OpenAL: Unexpected error.\n",filename);
 return false;
 }
 temporary_free(audio.buffer);
-
 return true;
 }
 /*:21*/
@@ -184,12 +179,12 @@ return read_fmt_chunk(fp,filename,audio);
 else if(type[0]=='d'&&type[1]=='a'&&type[2]=='t'&&type[3]=='a')
 return read_data_chunk(fp,filename,audio);
 else
-return read_unknown_chunk(fp,filename,audio);
+return read_unknown_chunk(fp,filename);
 }
 /*:12*//*14:*/
 #line 410 "weaver-interface-wave.cweb"
 
-bool read_unknown_chunk(FILE*fp,char*filename,struct audio_data*audio){
+bool read_unknown_chunk(FILE*fp,char*filename){
 unsigned long size;
 unsigned char buffer[4];
 size_t ret;
